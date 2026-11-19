@@ -1,6 +1,6 @@
 # brave-profile-manager
 
-**FYI:** This project is fully vibe coded.
+**FYI:** This project is fully vibe coded for my personal use and taste. It's shared publicly in case it's useful to you. Feel free to fork it and adapt it to your needs.
 
 
 A bash script to create and remove fully independent Brave browser profiles
@@ -32,7 +32,7 @@ tell apart in the taskbar and app launcher.
 ## Requirements
 
 - bash, coreutils
-- ImageMagick (`convert`/`magick` + `identify`) ΓÇö required for the add path
+- ImageMagick (`convert`/`magick` + `identify`) ╬ô├ç├╢ required for the add path
   only; remove has no extra dependencies
 - An installed Brave variant (stable, Beta, Nightly, Origin, snap, or
   flatpak)
@@ -47,4 +47,4 @@ You'll be prompted to add or remove profiles interactively.
 
 ## License
 
-MIT ΓÇö see [LICENSE](LICENSE).
+MIT ╬ô├ç├╢ see [LICENSE](LICENSE).
