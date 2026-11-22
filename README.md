@@ -1,6 +1,6 @@
 # brave-profile-manager
 
-**FYI:** This project is fully vibe coded for my personal use and taste. It's shared publicly in case it's useful to you. Feel free to fork it and adapt it to your needs.
+> **FYI:** This project is fully vibe coded for my personal use and taste. It's shared publicly in case it's useful to you. Feel free to fork it and adapt it to your needs.
 
 Creates independent Brave profiles as separate launchers, each with its own data folder, icon and taskbar group.
 
