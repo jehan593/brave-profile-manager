@@ -83,7 +83,7 @@ do_add() {
     elif command_exists convert; then
         IM_CONVERT="convert"
     else
-        die "ImageMagick is required to draw the colored dot on the icon (install with e.g. 'sudo pacman -S imagemagick' / 'sudo apt install imagemagick')."
+        die "ImageMagick is required to draw the colored dot on the icon. Please install it and try again."
     fi
     command_exists identify || die "ImageMagick's 'identify' not found (should ship alongside convert/magick)."
     im() { "$IM_CONVERT" "$@"; }
@@ -420,14 +420,17 @@ do_remove() {
 
 echo "Brave profile manager"
 echo "======================"
-echo "  1) Add / create new profile(s)"
-echo "  2) Remove existing profile(s)"
-echo
 while true; do
-    MODE=$(ask "What do you want to do? (1/2)" "1")
+    echo
+    echo "  [1] Add / create new profile(s)"
+    echo "  [2] Remove existing profile(s)"
+    echo "  [Q] Quit"
+    echo
+    MODE=$(ask "Choose 1, 2 or Q" "1")
     case "$MODE" in
-        1) do_add; break ;;
-        2) do_remove; break ;;
-        *) warn "Enter 1 or 2." ;;
+        1) do_add; read -r -p "Press Enter to continue" _ ;;
+        2) do_remove; read -r -p "Press Enter to continue" _ ;;
+        [Qq]) echo "Bye."; break ;;
+        *) warn "Enter 1, 2 or Q." ;;
     esac
 done

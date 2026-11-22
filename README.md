@@ -2,49 +2,24 @@
 
 **FYI:** This project is fully vibe coded for my personal use and taste. It's shared publicly in case it's useful to you. Feel free to fork it and adapt it to your needs.
 
+Creates independent Brave profiles as separate launchers, each with its own data folder, icon and taskbar group.
 
-A bash script to create and remove fully independent Brave browser profiles
-as `.desktop` launchers on Linux, based on the approach described in
-[this gist](https://gist.github.com/pannal/d398ee9801a8c6d0e44b1027af193610).
+Use this over Brave's built-in profile switcher when you want each profile pinned as its own app with its own icon and its own default-browser entry, on Linux or Windows.
 
-Each profile gets its own `--user-data-dir` (so it behaves as a completely
-separate browser instance) and its own icon, generated from your installed
-Brave variant with a colored dot composited on top so profiles are easy to
-tell apart in the taskbar and app launcher.
+**Linux**
 
-## Features
-
-**Add**
-- Detects installed Brave variants (stable, Beta, Nightly, Origin + its
-  Beta/Nightly, snap, flatpak) and lets you pick one
-- Creates a separate `--user-data-dir` per profile, so KDE/GNOME treat each
-  as its own app instead of grouping windows together
-- Extracts the icon from the selected variant and draws a colored dot (your
-  choice of color) in the top-right corner
-- Writes a `.desktop` launcher named exactly what you typed
-
-**Remove**
-- Lists launchers previously created by this script
-- Always removes the `.desktop` file and generated icon
-- Only deletes the profile's browsing data if you explicitly confirm,
-  per profile
-
-## Requirements
-
-- bash, coreutils
-- ImageMagick (`convert`/`magick` + `identify`) ╬ô├ç├╢ required for the add path
-  only; remove has no extra dependencies
-- An installed Brave variant (stable, Beta, Nightly, Origin, snap, or
-  flatpak)
-
-## Usage
+Needs **ImageMagick**.
 
 ```bash
-./brave-profile-manager.sh
+curl -fsSL https://raw.githubusercontent.com/jehan593/brave-profile-manager/main/brave-profile-manager.sh | bash
 ```
 
-You'll be prompted to add or remove profiles interactively.
+**Windows**
 
-## License
+```powershell
+powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/jehan593/brave-profile-manager/main/brave-profile-manager.ps1 | iex"
+```
 
-MIT ╬ô├ç├╢ see [LICENSE](LICENSE).
+`1` = add profiles, `2` = remove.
+
+MIT — [LICENSE](LICENSE).
