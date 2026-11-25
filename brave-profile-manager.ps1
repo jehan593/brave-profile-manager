@@ -335,14 +335,15 @@ function Get-Status {
 # Registering a launcher as a browser (Settings > Apps > Default apps)
 # ---------------------------------------------------------------------------
 
-function Register-Browser([string]$slug, [string]$name, [string]$brave, [string]$vbs, [string]$dataDir, [string]$iconPath, [string]$aumid) {
-    $wscript = Join-Path $env:WINDIR 'System32\wscript.exe'
-    $id      = "$IdPrefix$slug"
-    $icon    = $iconPath
-    $desc    = 'Brave browser profile with its own data folder, icon and taskbar group.'
-    $cls     = "HKCU:\Software\Classes\$id"
-    $cli     = "$ClientsKey\$id"
-    $cap     = "$cli\Capabilities"
+function Register-Browser([string]$slug, [string]$name, [string]$brave, [string]$dataDir, [string]$iconPath, [string]$aumid) {
+    $id        = "$IdPrefix$slug"
+    $icon      = $iconPath
+    $desc      = 'Brave browser profile with its own data folder, icon and taskbar group.'
+    $cls       = "HKCU:\Software\Classes\$id"
+    $cli       = "$ClientsKey\$id"
+    $cap       = "$cli\Capabilities"
+    $openCmd   = ('"{0}" --user-data-dir="{1}" "%1"' -f $brave, $dataDir)
+    $launchCmd = ('"{0}" --user-data-dir="{1}"' -f $brave, $dataDir)
 
     # Start clean so stale values from an earlier run never linger.
     foreach ($k in @($cls, $cli)) {
@@ -356,14 +357,14 @@ function Register-Browser([string]$slug, [string]$name, [string]$brave, [string]
     Set-ItemProperty -Path "$cls\Application" -Name 'ApplicationDescription' -Value $desc
     Set-ItemProperty -Path "$cls\Application" -Name 'ApplicationIcon'        -Value $icon
     Set-RegDefault "$cls\DefaultIcon" $icon
-    Set-RegDefault "$cls\shell\open\command" ('"{0}" "{1}" "%1"' -f $wscript, $vbs)
+    Set-RegDefault "$cls\shell\open\command" $openCmd
 
     # The browser entry itself.
     Set-RegDefault $cli $name
     Set-ItemProperty -Path $cli -Name 'DataDir' -Value $dataDir
     Set-ItemProperty -Path $cli -Name 'Aumid' -Value $aumid
     Set-RegDefault "$cli\DefaultIcon" $icon
-    Set-RegDefault "$cli\shell\open\command" ('"{0}"' -f $vbs)
+    Set-RegDefault "$cli\shell\open\command" $launchCmd
 
     Set-RegDefault $cap ''
     Set-ItemProperty -Path $cap -Name 'ApplicationName'        -Value $name
@@ -477,9 +478,9 @@ else { Start-Process -FilePath $brave }
     $launch = $launch.Replace('__BRAVE__', $brave.Replace("'", "''"))
     Set-Content -Path $LaunchPs1 -Value $launch -Encoding UTF8
 
-    # Per profile: VBS wrapper (no flashing window, passes links through),
-    # Start menu and Desktop shortcuts carrying Brave's own taskbar identity,
-    # and browser registration.
+    # Per profile: Start menu and Desktop shortcuts that launch Brave directly
+    # with this profile's data folder, carrying Brave's own taskbar identity,
+    # plus browser registration. No helper process is involved.
     $ws = New-Object -ComObject WScript.Shell
     foreach ($it in $items) {
         $aumid    = Get-BrowserAumid $brave $it.DataDir
@@ -487,36 +488,14 @@ else { Start-Process -FilePath $brave }
         New-LauncherIcon $brave $it.Color $iconPath
         Initialize-ProfileIcon $it.DataDir $iconPath
 
-        $vbsPath = Join-Path $InstallDir ($it.Slug + '.vbs')
-        # Launch Brave directly in VBScript. Going through PowerShell added a
-        # second process to every launch. Shortcuts still carry Brave's own
-        # AUMID, so pins and new windows keep grouping as before.
-        $vbs = @'
-Option Explicit
-Dim a, url, dataDir, brave, sh, cmd
-Set a = WScript.Arguments
-url = ""
-If a.Count > 0 Then url = a(0)
-dataDir = "__DATADIR__"
-brave = "__BRAVE__"
-
-Set sh = CreateObject("WScript.Shell")
-cmd = """" & brave & """"
-If dataDir <> "" Then cmd = cmd & " --user-data-dir=""" & dataDir & """"
-If url <> "" Then cmd = cmd & " """ & Replace(url, """", "%22") & """"
-sh.Run cmd, 0, False
-'@
-        $vbs = $vbs.Replace('__BRAVE__', $brave).Replace('__DATADIR__', $it.DataDir)
-        Set-Content -Path $vbsPath -Value $vbs -Encoding ASCII
-
         $targets = @(
             (Join-Path ([Environment]::GetFolderPath('Programs')) ($it.Safe + '.lnk')),
             (Join-Path ([Environment]::GetFolderPath('Desktop')) ($it.Safe + '.lnk'))
         )
         foreach ($t in $targets) {
             $lnk = $ws.CreateShortcut($t)
-            $lnk.TargetPath       = Join-Path $env:WINDIR 'System32\wscript.exe'
-            $lnk.Arguments        = ('"{0}"' -f $vbsPath)
+            $lnk.TargetPath       = $brave
+            $lnk.Arguments        = ('--user-data-dir="{0}"' -f $it.DataDir)
             $lnk.WorkingDirectory = Split-Path $brave
             $lnk.IconLocation     = $iconPath
             $lnk.Description      = ('{0} [{1}]' -f $Marker, $it.Slug)
@@ -524,7 +503,7 @@ sh.Run cmd, 0, False
             Set-LauncherAumid $t $aumid
         }
 
-        Register-Browser $it.Slug $it.Name $brave $vbsPath $it.DataDir $iconPath $aumid
+        Register-Browser $it.Slug $it.Name $brave $it.DataDir $iconPath $aumid
         Write-Host ("Created profile: {0}  (data folder: {1})" -f $it.Name, $it.DataDir) -ForegroundColor Green
     }
 
@@ -550,6 +529,7 @@ function Remove-OneLauncher($c) {
         Remove-Item -Path $l.Path -Force
         Write-Host "  removed shortcut: $($l.Path)"
     }
+    # Clean up a legacy VBS wrapper from earlier versions, if one exists.
     Remove-Item -Path (Join-Path $InstallDir ($c.Slug + '.vbs')) -Force -ErrorAction SilentlyContinue
     Remove-Item -Path (Join-Path $IconsDir ($c.Slug + '.ico')) -Force -ErrorAction SilentlyContinue
     Unregister-Browser $c.Slug

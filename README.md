@@ -2,9 +2,9 @@
 
 > **FYI:** This project is fully vibe coded for my personal use and taste. It's shared publicly in case it's useful to you. Feel free to fork it and adapt it to your needs.
 
-Creates independent Brave profiles as separate launchers, each with its own data folder, icon and taskbar group.
+Brave already has a profile switcher. This exists for the case it doesn't cover: making each profile a separate app and browser entry on Linux and Windows, with its own data folder, icon, taskbar group, launcher, and default-browser registration.
 
-Use this over Brave's built-in profile switcher when you want each profile pinned as its own app with its own icon and its own default-browser entry, on Linux or Windows.
+So each profile shows up on its own in default-app settings and in link/file "open with" dialogs. You can pick one profile as the browser for `http`/`https` or HTML files without affecting the others. The script only registers the choices; you choose the default yourself.
 
 **Linux**
 
