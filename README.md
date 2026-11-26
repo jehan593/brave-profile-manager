@@ -11,7 +11,7 @@ So each profile shows up on its own in default-app settings and in link/file "op
 Needs **ImageMagick**.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jehan593/brave-profile-manager/main/brave-profile-manager.sh | bash
+bash <(curl -fsSL https://raw.githubusercontent.com/jehan593/brave-profile-manager/main/brave-profile-manager.sh)
 ```
 
 **Windows**

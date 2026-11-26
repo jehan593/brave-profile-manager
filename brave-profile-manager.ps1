@@ -535,12 +535,19 @@ function Remove-OneLauncher($c) {
     Unregister-Browser $c.Slug
     Write-Host "Removed profile launcher: $($c.Name)" -ForegroundColor Green
 
-    # Its data folder is deleted too. The guard keeps this to folders this
-    # script creates, never an arbitrary path.
+    # Ask before deleting browsing data, like the Linux script does. The guard
+    # keeps this to folders this script creates, never an arbitrary path.
     if ($c.DataDir -and (Test-Path $c.DataDir) -and
         ($c.DataDir -like ((Join-Path $DataRoot '*')))) {
-        Remove-Item -Path $c.DataDir -Recurse -Force -ErrorAction SilentlyContinue
-        Write-Host "  deleted data folder: $($c.DataDir)" -ForegroundColor Green
+        Write-Host ''
+        Write-Host "Profile data for '$($c.Name)' still exists at: $($c.DataDir)" -ForegroundColor Yellow
+        $confirm = (Read-Host "  Delete this browsing data too? This is permanent. Type 'yes' to delete, anything else to keep").Trim().ToLower()
+        if ($confirm -eq 'yes') {
+            Remove-Item -Path $c.DataDir -Recurse -Force -ErrorAction SilentlyContinue
+            Write-Host "  deleted $($c.DataDir)" -ForegroundColor Green
+        } else {
+            Write-Host "  Kept $($c.DataDir)"
+        }
     }
 }
 
@@ -586,7 +593,7 @@ function Uninstall-Launchers {
     Write-Host 'If a removed profile was your default browser, Windows will ask you to pick another one.'
     Write-Host 'If you pinned a profile to the taskbar, unpin it manually (right-click > Unpin).'
     Write-Host 'Pin the replacement shortcut again so Windows stores its new taskbar identity.'
-    Write-Host 'The removed profile''s data folder was deleted with it.'
+    Write-Host 'Profile data folders are only deleted when you confirm with yes.'
 }
 
 # ---------------------------------------------------------------------------
