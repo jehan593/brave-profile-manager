@@ -124,6 +124,25 @@ function Remove-OpenWithProgIdEverywhere([string]$progId) {
     }
 }
 
+# Windows keeps a separate UserChoice when someone makes this launcher the
+# default for a file type or protocol. Only delete choices that point at us.
+function Remove-UserChoiceForProgId([string]$progId) {
+    $roots = @(
+        'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts',
+        'HKCU:\Software\Microsoft\Windows\Shell\Associations\UrlAssociations'
+    )
+    foreach ($root in $roots) {
+        if (-not (Test-Path $root)) { continue }
+        foreach ($assoc in (Get-ChildItem -Path $root -ErrorAction SilentlyContinue)) {
+            $choice = Join-Path $assoc.PSPath 'UserChoice'
+            if (-not (Test-Path $choice)) { continue }
+            if ((Get-Item -Path $choice).GetValue('ProgId') -eq $progId) {
+                Remove-Item -Path $choice -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+}
+
 # Read/write the AppUserModelID stored inside a .lnk file, and read the one
 # Brave assigns to its own windows. The shortcut gets Brave's natural ID so a
 # pin and every window of that launcher group together.
@@ -444,6 +463,7 @@ function Register-Browser([string]$slug, [string]$name, [string]$brave, [string]
 function Unregister-Browser([string]$slug) {
     $id = "$IdPrefix$slug"
     Remove-OpenWithProgIdEverywhere $id
+    Remove-UserChoiceForProgId $id
     Remove-Item -Path "HKCU:\Software\Classes\$id" -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -Path "$ClientsKey\$id" -Recurse -Force -ErrorAction SilentlyContinue
     Remove-ItemProperty -Path 'HKCU:\Software\RegisteredApplications' -Name $id -ErrorAction SilentlyContinue
