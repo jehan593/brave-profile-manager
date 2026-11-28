@@ -12,9 +12,9 @@
 #   - MIME types, icons and Brave variants are read from the registrations
 #     already installed on this machine. No desktop-environment name, package
 #     manager, terminal emulator or dialog tool is assumed.
-#   - Each profile gets a versioned marker, a MIME registration and a saved,
-#     self-contained uninstaller, so it behaves like an independently installed
-#     browser app and can be removed without affecting other profiles.
+#   - Each profile gets a MIME registration and a saved, self-contained
+#     uninstaller, so it behaves like an independently installed browser app
+#     and can be removed without affecting other profiles.
 #
 # ADD:
 #   - detects installed Brave variants (stable, Beta, Nightly, Origin and
@@ -31,8 +31,11 @@
 #
 # REMOVE:
 #   - lists launchers previously created by this script
+#   - uses the saved uninstaller when present, otherwise cleans up inline;
+#     old launchers and standalone uninstall launchers are cleaned up on
+#     removal, not rewritten at startup
 #   - always removes the launcher, icon, MIME registrations and saved
-#     uninstaller (and any legacy uninstall launcher from older versions)
+#     uninstaller
 #   - only deletes the profile's browsing data if you explicitly type
 #     "yes" when asked, per profile
 #
@@ -788,21 +791,26 @@ profile_from_desktop() {
     P_SLUG="$slug"
     P_UNINSTALLER="$SUPPORT_DIR/$slug/uninstall.sh"
     P_UNINSTALL_DESKTOP="$APPS_DIR/${class}-uninstall.desktop"
-    P_VERSION=$(desk_field "$f" X-BPM-Version)
 }
 
 # A name is a conflict if its generated slug is already used in this run, by an
 # installed profile, or by an existing data folder. Slugs are lowercase, so
 # "Twin", "twin" and "TWIN" all count as the same name.
 slug_conflict() {
-    local slug="$1" s f role
+    local slug="$1" s f role wm
     for s in "${P_SLUG[@]:-}"; do
         [[ "$s" == "$slug" ]] && return 0
     done
     while IFS= read -r f; do
         role=$(desk_field "$f" X-BPM-Role)
         [[ "$role" == "$UNINSTALL_ROLE" ]] && continue
-        [[ "$(desk_field "$f" X-BPM-Slug)" == "$slug" ]] && return 0
+        [[ "$f" == "$APPS_DIR"/* || "$(desk_field "$f" X-BPM-Marker)" == "$MARKER" ]] || continue
+        s=$(desk_field "$f" X-BPM-Slug)
+        if [[ -z "$s" ]]; then
+            wm=$(desk_field "$f" StartupWMClass)
+            [[ "$wm" == brave-* ]] && s=${wm#brave-}
+        fi
+        [[ "$s" == "$slug" ]] && return 0
     done < <(desktop_files)
     [[ -n "${BASE_ROOT:-}" && -d "${BASE_ROOT}-${slug}" ]] && return 0
     return 1
@@ -1057,68 +1065,11 @@ do_remove() {
 }
 
 # ---------------------------------------------------------------------------
-# Upgrade older launchers in place
-# ---------------------------------------------------------------------------
-
-upgrade_legacy_profiles() {
-    local f upgraded=0 slug class name icon datadir base_bin guard desktop needs
-    local -a mimes=()
-
-    while IFS= read -r f; do
-        profile_from_desktop "$f"
-        slug="$P_SLUG"; class="$P_CLASS"; name="$P_NAME"; icon="$P_ICON"; datadir="$P_DATADIR"
-        base_bin="$P_BASE_BIN"
-        [[ -z "$datadir" || "$datadir" == '<unknown>' ]] && { warn "Skipping $f: no data directory found."; continue; }
-        [[ -z "$base_bin" ]] && { warn "Skipping $f: no Exec command found."; continue; }
-
-        needs=0
-        [[ -e "$P_UNINSTALL_DESKTOP" ]] && needs=1
-        if [[ "${P_VERSION:-}" == "$FORMAT_VERSION" && -x "$P_UNINSTALLER" &&
-             -n "$(desk_field "$f" MimeType)" ]] && (( needs == 0 )); then
-            continue
-        fi
-
-        info "Upgrading '$name' to format $FORMAT_VERSION..."
-        backup_file "$f"
-        if [[ -e "$P_UNINSTALL_DESKTOP" ]]; then
-            backup_file "$P_UNINSTALL_DESKTOP"
-            rm -f -- "$P_UNINSTALL_DESKTOP" && ok "  removed uninstall launcher $P_UNINSTALL_DESKTOP"
-        fi
-
-        mapfile -t mimes < <(mimes_from_desktop "$(desktop_for_command "$base_bin")")
-        if [[ ${#mimes[@]} -eq 0 ]]; then
-            mapfile -t mimes < <(all_brave_mimes)
-        fi
-
-        guard="$datadir"
-        desktop="$f"
-        write_uninstaller "$slug" "$name" "$datadir" "$guard" "$class" "$icon" \
-            "$desktop" "$SUPPORT_DIR/$slug/manifest" "${mimes[@]:-}"
-        write_profile_desktop "$desktop" "$name" "$slug" "$base_bin" "$datadir" "$class" "$icon" \
-            "${base_bin%% *}" "$P_UNINSTALLER" "Brave browser - $name profile" "${mimes[@]:-}"
-        if [[ ${#mimes[@]} -gt 0 ]]; then
-            mimeapps_add_associations "$XDG_CONFIG_HOME/mimeapps.list" "$class.desktop" "${mimes[@]}"
-        fi
-        if command_exists desktop-file-validate; then
-            desktop-file-validate "$desktop" || warn "  desktop-file-validate reported issues in $desktop"
-        fi
-        ok "  upgraded $desktop"
-        upgraded=$((upgraded+1))
-    done < <(profile_desktop_files)
-
-    if (( upgraded > 0 )); then
-        refresh_caches
-        ok "Upgraded $upgraded existing profile(s)."
-    fi
-}
-
-# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 echo "Brave profile manager"
 echo "======================"
-upgrade_legacy_profiles
 while true; do
     echo
     echo "  [1] Add / create new profile(s)"
