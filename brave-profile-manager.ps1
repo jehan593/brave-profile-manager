@@ -589,7 +589,9 @@ function Register-Browser([string]$slug, [string]$name, [string]$brave, [string]
     $cli       = "$ClientsKey\$id"
     $cap       = "$cli\Capabilities"
     $assoc     = Get-BraveAssociations
-    $openCmd   = ('"{0}" --user-data-dir="{1}" "%1"' -f $brave, $dataDir)
+    # --single-argument must stay last: everything after it is treated as the
+    # one shell-supplied URL/file argument, matching Brave's own registration.
+    $openCmd   = ('"{0}" --user-data-dir="{1}" --single-argument %1' -f $brave, $dataDir)
     $launchCmd = ('"{0}" --user-data-dir="{1}"' -f $brave, $dataDir)
 
     # Start clean so stale values from an earlier run never linger.
