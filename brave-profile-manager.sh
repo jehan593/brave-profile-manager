@@ -26,12 +26,13 @@
 #   - writes a .desktop launcher named exactly what you typed
 #   - registers the variant's MIME types so the profile appears in
 #     default-app and "Open with" lists; it never sets you as the default
-#   - saves a per-profile uninstaller and a standard uninstall launcher
+#   - saves a per-profile uninstaller used by menu option 2 and the
+#     right-click action; no separate uninstall launcher is added
 #
 # REMOVE:
 #   - lists launchers previously created by this script
-#   - always removes the .desktop files, icon, MIME registrations and
-#     saved uninstaller
+#   - always removes the launcher, icon, MIME registrations and saved
+#     uninstaller (and any legacy uninstall launcher from older versions)
 #   - only deletes the profile's browsing data if you explicitly type
 #     "yes" when asked, per profile
 #
@@ -357,8 +358,8 @@ refresh_caches() {
 
 write_uninstaller() {
     local slug="$1" name="$2" data_dir="$3" data_guard="$4" class="$5"
-    local icon="$6" desktop="$7" uninstall_desktop="$8" manifest="$9"
-    shift 9
+    local icon="$6" desktop="$7" manifest="$8"
+    shift 8
     local -a mimes=("$@")
     local dir="$SUPPORT_DIR/$slug" uninstaller="$SUPPORT_DIR/$slug/uninstall.sh"
     local tmp mimes_q='' m q
@@ -384,7 +385,6 @@ DATA_GUARD=__BPM_DATA_GUARD__
 CLASS=__BPM_CLASS__
 ICON=__BPM_ICON__
 DESKTOP=__BPM_DESKTOP__
-UNINSTALL_DESKTOP=__BPM_UNINSTALL_DESKTOP__
 MANIFEST=__BPM_MANIFEST__
 SUPPORT_DIR=__BPM_SUPPORT_DIR__
 MIMES=( __BPM_MIMES__ )
@@ -392,6 +392,7 @@ KEEP_DATA=0
 
 XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+LEGACY_UNINSTALL_DESKTOP="${XDG_DATA_HOME}/applications/${CLASS}-uninstall.desktop"
 
 info() { echo -e "\033[1;34m==>\033[0m $*"; }
 warn() { echo -e "\033[1;33m!!\033[0m $*" >&2; }
@@ -464,7 +465,7 @@ done
 
 ID="${CLASS}.desktop"
 
-for f in "$DESKTOP" "$UNINSTALL_DESKTOP" "$MANIFEST"; do
+for f in "$DESKTOP" "$LEGACY_UNINSTALL_DESKTOP" "$MANIFEST"; do
     if [[ -n "$f" && -e "$f" ]]; then
         rm -f -- "$f" && ok "  removed $f"
     fi
@@ -515,7 +516,6 @@ EOF
     q_class=$(shell_quote "$class")
     q_icon=$(shell_quote "$icon")
     q_desktop=$(shell_quote "$desktop")
-    q_udesk=$(shell_quote "$uninstall_desktop")
     q_manifest=$(shell_quote "$manifest")
     q_support=$(shell_quote "$SUPPORT_DIR")
     q_marker=$(shell_quote "$MARKER")
@@ -528,7 +528,6 @@ EOF
         -e "s|__BPM_CLASS__|$(sed_repl "$q_class")|g" \
         -e "s|__BPM_ICON__|$(sed_repl "$q_icon")|g" \
         -e "s|__BPM_DESKTOP__|$(sed_repl "$q_desktop")|g" \
-        -e "s|__BPM_UNINSTALL_DESKTOP__|$(sed_repl "$q_udesk")|g" \
         -e "s|__BPM_MANIFEST__|$(sed_repl "$q_manifest")|g" \
         -e "s|__BPM_SUPPORT_DIR__|$(sed_repl "$q_support")|g" \
         -e "s|__BPM_MARKER__|$(sed_repl "$q_marker")|g" \
@@ -547,7 +546,6 @@ data_dir=$data_dir
 data_guard=$data_guard
 icon=$icon
 desktop=$desktop
-uninstall_desktop=$uninstall_desktop
 generated=$(date -Is)
 mimes=$(printf '%s;' "${mimes[@]:-}")
 EOF
@@ -590,27 +588,6 @@ X-BPM-Version=$FORMAT_VERSION
 Name=Uninstall $(desk_escape "$name")
 Icon=$(desk_escape "$icon")
 Exec=$(desk_escape "$uninstaller")
-EOF
-    chmod +x "$path"
-}
-
-write_uninstall_desktop() {
-    local path="$1" name="$2" slug="$3" icon="$4" uninstaller="$5" class="$6"
-    cat > "$path" <<EOF
-[Desktop Entry]
-Version=1.0
-Type=Application
-Name=Uninstall $(desk_escape "$name")
-Comment=$(desk_escape "Remove the $name Brave profile launcher")
-Exec=$(desk_escape "$uninstaller")
-Icon=$(desk_escape "$icon")
-Terminal=true
-Categories=System;
-NoDisplay=false
-X-BPM-Marker=$(desk_escape "$MARKER")
-X-BPM-Role=$UNINSTALL_ROLE
-X-BPM-Slug=$slug
-X-BPM-Version=$FORMAT_VERSION
 EOF
     chmod +x "$path"
 }
@@ -923,9 +900,10 @@ do_add() {
         USER_DATA_DIR="${BASE_ROOT}-${SLUG}"
         ICON_PATH="${ICONS_DIR}/${CLASS}.png"
         DESKTOP_PATH="${APPS_DIR}/${CLASS}.desktop"
-        UNINSTALL_DESKTOP_PATH="${APPS_DIR}/${CLASS}-uninstall.desktop"
+        LEGACY_UNINSTALL_DESKTOP_PATH="${APPS_DIR}/${CLASS}-uninstall.desktop"
         UNINSTALLER_PATH="$SUPPORT_DIR/$SLUG/uninstall.sh"
         MANIFEST_PATH="$SUPPORT_DIR/$SLUG/manifest"
+        rm -f -- "$LEGACY_UNINSTALL_DESKTOP_PATH"
 
         echo
         info "[$NAME] -> class=$CLASS  data-dir=$USER_DATA_DIR"
@@ -949,17 +927,12 @@ do_add() {
 
         DATA_GUARD="${BASE_ROOT}-"*
         write_uninstaller "$SLUG" "$NAME" "$USER_DATA_DIR" "$DATA_GUARD" "$CLASS" \
-            "$ICON_PATH" "$DESKTOP_PATH" "$UNINSTALL_DESKTOP_PATH" "$MANIFEST_PATH" \
-            "${SEL_MIMES[@]:-}"
+            "$ICON_PATH" "$DESKTOP_PATH" "$MANIFEST_PATH" "${SEL_MIMES[@]:-}"
 
         write_profile_desktop "$DESKTOP_PATH" "$NAME" "$SLUG" "$BASE_BIN" "$USER_DATA_DIR" "$CLASS" \
             "$ICON_PATH" "$TRYEXEC_BIN" "$UNINSTALLER_PATH" "Brave browser - $NAME profile" \
             "${SEL_MIMES[@]:-}"
         ok "  launcher -> $DESKTOP_PATH"
-
-        write_uninstall_desktop "$UNINSTALL_DESKTOP_PATH" "$NAME" "$SLUG" "$ICON_PATH" \
-            "$UNINSTALLER_PATH" "$CLASS"
-        ok "  uninstall launcher -> $UNINSTALL_DESKTOP_PATH"
 
         if [[ ${#SEL_MIMES[@]} -gt 0 ]]; then
             mimeapps_add_associations "$XDG_CONFIG_HOME/mimeapps.list" "${CLASS}.desktop" "${SEL_MIMES[@]}"
@@ -968,7 +941,6 @@ do_add() {
 
         if command_exists desktop-file-validate; then
             desktop-file-validate "$DESKTOP_PATH" || warn "  desktop-file-validate reported issues in $DESKTOP_PATH"
-            desktop-file-validate "$UNINSTALL_DESKTOP_PATH" || warn "  desktop-file-validate reported issues in $UNINSTALL_DESKTOP_PATH"
         fi
     done
 
@@ -1085,7 +1057,7 @@ do_remove() {
 # ---------------------------------------------------------------------------
 
 upgrade_legacy_profiles() {
-    local f upgraded=0 slug class name icon datadir base_bin guard desktop unidesk
+    local f upgraded=0 slug class name icon datadir base_bin guard desktop needs
     local -a mimes=()
 
     while IFS= read -r f; do
@@ -1094,11 +1066,20 @@ upgrade_legacy_profiles() {
         base_bin="$P_BASE_BIN"
         [[ -z "$datadir" || "$datadir" == '<unknown>' ]] && { warn "Skipping $f: no data directory found."; continue; }
         [[ -z "$base_bin" ]] && { warn "Skipping $f: no Exec command found."; continue; }
-        [[ "${P_VERSION:-}" == "$FORMAT_VERSION" && -x "$P_UNINSTALLER" &&
-           -n "$(desk_field "$f" MimeType)" ]] && continue
+
+        needs=0
+        [[ -e "$P_UNINSTALL_DESKTOP" ]] && needs=1
+        if [[ "${P_VERSION:-}" == "$FORMAT_VERSION" && -x "$P_UNINSTALLER" &&
+             -n "$(desk_field "$f" MimeType)" ]] && (( needs == 0 )); then
+            continue
+        fi
 
         info "Upgrading '$name' to format $FORMAT_VERSION..."
         backup_file "$f"
+        if [[ -e "$P_UNINSTALL_DESKTOP" ]]; then
+            backup_file "$P_UNINSTALL_DESKTOP"
+            rm -f -- "$P_UNINSTALL_DESKTOP" && ok "  removed uninstall launcher $P_UNINSTALL_DESKTOP"
+        fi
 
         mapfile -t mimes < <(mimes_from_desktop "$(desktop_for_command "$base_bin")")
         if [[ ${#mimes[@]} -eq 0 ]]; then
@@ -1107,12 +1088,10 @@ upgrade_legacy_profiles() {
 
         guard="$datadir"
         desktop="$f"
-        unidesk="$P_UNINSTALL_DESKTOP"
         write_uninstaller "$slug" "$name" "$datadir" "$guard" "$class" "$icon" \
-            "$desktop" "$unidesk" "$SUPPORT_DIR/$slug/manifest" "${mimes[@]:-}"
+            "$desktop" "$SUPPORT_DIR/$slug/manifest" "${mimes[@]:-}"
         write_profile_desktop "$desktop" "$name" "$slug" "$base_bin" "$datadir" "$class" "$icon" \
             "${base_bin%% *}" "$P_UNINSTALLER" "Brave browser - $name profile" "${mimes[@]:-}"
-        write_uninstall_desktop "$unidesk" "$name" "$slug" "$icon" "$P_UNINSTALLER" "$class"
         if [[ ${#mimes[@]} -gt 0 ]]; then
             mimeapps_add_associations "$XDG_CONFIG_HOME/mimeapps.list" "$class.desktop" "${mimes[@]}"
         fi
