@@ -10,9 +10,7 @@ Removing one profile never uninstalls Brave or the other profiles. Use `2` in th
 
 **Linux**
 
-Needs **ImageMagick** for creating profiles. Paths, Brave variants, icons and MIME types are discovered from your XDG directories and installed Brave registration; nothing is tied to a particular distribution or desktop environment.
-
-Each profile is registered as its own browser app and gets a saved uninstaller used by menu option 2 and the right-click action. Your chosen default browser is never changed for you.
+Needs **ImageMagick** for creating profiles.
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/jehan593/brave-profile-manager/main/brave-profile-manager.sh)
