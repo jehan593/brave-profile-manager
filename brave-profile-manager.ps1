@@ -419,8 +419,6 @@ function Get-Status {
 function Register-UninstallEntry([string]$slug, [string]$name, [string]$icon, [string]$dataDir) {
     $id  = "$IdPrefix$slug"
     $key = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$id"
-    $exe = Join-Path $PSHOME 'powershell.exe'
-    if (-not (Test-Path $exe)) { $exe = Join-Path $PSHOME 'pwsh.exe' }
 
     # Store the uninstaller with the support files so it survives if the git
     # clone is moved or deleted later.
@@ -434,8 +432,26 @@ function Register-UninstallEntry([string]$slug, [string]$name, [string]$icon, [s
         $copy = $source
     }
 
-    $cmd   = '"{0}" -NoProfile -ExecutionPolicy Bypass -File "{1}" -RemoveSlug "{2}"' -f $exe, $copy, $slug
-    $quiet = $cmd + ' -KeepData'
+    # Pick the available host at uninstall time. Windows PowerShell 5.1 and
+    # PowerShell 7 can both run the script, so no OS transition breaks this.
+    $wrapper = Join-Path $InstallDir 'uninstall.cmd'
+    $batch = @'
+@echo off
+setlocal
+set "SCRIPT=%~dp0brave-profile-manager.ps1"
+set "PS=powershell.exe"
+if exist "%ProgramFiles%\PowerShell\7\pwsh.exe" set "PS=%ProgramFiles%\PowerShell\7\pwsh.exe"
+if exist "%LOCALAPPDATA%\Microsoft\WindowsApps\pwsh.exe" set "PS=%LOCALAPPDATA%\Microsoft\WindowsApps\pwsh.exe"
+where pwsh.exe >nul 2>nul && for /f "delims=" %%P in ('where pwsh.exe') do set "PS=%%P"
+"%PS%" -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT%" -RemoveSlug "%~1" %~2
+exit /b %ERRORLEVEL%
+'@
+    Set-Content -Path $wrapper -Value $batch -Encoding ASCII
+
+    $shell = $env:ComSpec
+    if ($shell -match ' ') { $shell = '"' + $shell + '"' }
+    $cmd   = '{0} /c ""{1}" "{2}""' -f $shell, $wrapper, $slug
+    $quiet = '{0} /c ""{1}" "{2}" -KeepData"' -f $shell, $wrapper, $slug
 
     if (-not (Test-Path $key)) { New-Item -Path $key -Force | Out-Null }
     Set-ItemProperty -Path $key -Name 'DisplayName'       -Value $name
