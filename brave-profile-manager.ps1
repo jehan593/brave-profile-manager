@@ -11,7 +11,8 @@
 #     window share one explicit taskbar identity, so pinning stays grouped.
 #   - is registered as its own browser, so it shows up in
 #     Settings > Apps > Default apps and can be set as the default browser
-#   - passes links and files on to Brave when it is the default browser
+#   - supports the same protocols and file types as Brave, and appears in
+#     "Open with" menus; links and files open in this profile
 #
 # MENU:
 #   [1] Add / create new profile(s) : asks how many, then a name and data folder for each
@@ -71,6 +72,56 @@ public static extern void SHChangeNotify(int wEventId, uint uFlags, System.IntPt
 '@ -ErrorAction Stop
         [BraveProfile.Native]::SHChangeNotify(0x08000000, 0, [IntPtr]::Zero, [IntPtr]::Zero)
     } catch { }
+}
+
+# Mirror the protocols and file types Brave itself advertises. The fallback is
+# Brave's current list, used when Brave has not registered itself yet.
+function Get-BraveAssociations {
+    $schemes = @('http', 'https', 'irc', 'mailto', 'mms', 'news', 'nntp',
+                 'sms', 'smsto', 'snews', 'tel', 'urn', 'webcal', 'brave-browser')
+    $exts    = @('.htm', '.html', '.mhtml', '.shtml', '.svg', '.xht', '.xhtml',
+                 '.webp', '.pdf')
+    $roots = @('HKCU:\Software\Clients\StartMenuInternet',
+               'HKLM:\SOFTWARE\Clients\StartMenuInternet',
+               'HKLM:\SOFTWARE\WOW6432Node\Clients\StartMenuInternet')
+    foreach ($root in $roots) {
+        if (-not (Test-Path $root)) { continue }
+        $clients = Get-ChildItem -Path $root -ErrorAction SilentlyContinue |
+                   Where-Object { $_.PSChildName -like 'Brave.*' }
+        foreach ($c in $clients) {
+            foreach ($part in @('URLAssociations', 'FileAssociations')) {
+                $p = Join-Path (Join-Path $root $c.PSChildName) $part
+                if (-not (Test-Path $p)) { continue }
+                $names = @(Get-Item -Path $p).GetValueNames() | Where-Object { $_ }
+                if ($part -eq 'URLAssociations') { $schemes += $names } else { $exts += $names }
+            }
+        }
+    }
+    [pscustomobject]@{
+        Schemes    = @($schemes | Sort-Object -Unique)
+        Extensions = @($exts | Where-Object { $_ -like '.*' } | Sort-Object -Unique)
+    }
+}
+
+# OpenWithProgids is what makes an app appear in the right-click "Open with"
+# list. It does not change the user's default app for the file type.
+function Set-OpenWithProgId([string]$ext, [string]$progId, [switch]$Remove) {
+    $key = "HKCU:\Software\Classes\$ext\OpenWithProgids"
+    if ($Remove) {
+        Remove-ItemProperty -Path $key -Name $progId -ErrorAction SilentlyContinue
+        return
+    }
+    if (-not (Test-Path $key)) { New-Item -Path $key -Force | Out-Null }
+    New-ItemProperty -Path $key -Name $progId -Value '' -PropertyType String -Force | Out-Null
+}
+
+function Remove-OpenWithProgIdEverywhere([string]$progId) {
+    $root = 'HKCU:\Software\Classes'
+    if (-not (Test-Path $root)) { return }
+    foreach ($ext in (Get-ChildItem -Path $root -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -like '.*' })) {
+        $key = Join-Path $ext.PSPath 'OpenWithProgids'
+        if (Test-Path $key) { Remove-ItemProperty -Path $key -Name $progId -ErrorAction SilentlyContinue }
+    }
 }
 
 # Read/write the AppUserModelID stored inside a .lnk file, and read the one
@@ -342,6 +393,7 @@ function Register-Browser([string]$slug, [string]$name, [string]$brave, [string]
     $cls       = "HKCU:\Software\Classes\$id"
     $cli       = "$ClientsKey\$id"
     $cap       = "$cli\Capabilities"
+    $assoc     = Get-BraveAssociations
     $openCmd   = ('"{0}" --user-data-dir="{1}" "%1"' -f $brave, $dataDir)
     $launchCmd = ('"{0}" --user-data-dir="{1}"' -f $brave, $dataDir)
 
@@ -352,6 +404,7 @@ function Register-Browser([string]$slug, [string]$name, [string]$brave, [string]
 
     # ProgId that Windows uses to open links and files with this launcher.
     Set-RegDefault $cls $name
+    Set-ItemProperty -Path $cls -Name 'AppUserModelId' -Value $aumid
     Set-RegDefault "$cls\Application" ''
     Set-ItemProperty -Path "$cls\Application" -Name 'ApplicationName'        -Value $name
     Set-ItemProperty -Path "$cls\Application" -Name 'ApplicationDescription' -Value $desc
@@ -372,12 +425,13 @@ function Register-Browser([string]$slug, [string]$name, [string]$brave, [string]
     Set-ItemProperty -Path $cap -Name 'ApplicationIcon'        -Value $icon
 
     Set-RegDefault "$cap\URLAssociations" ''
-    foreach ($proto in @('http', 'https')) {
+    foreach ($proto in $assoc.Schemes) {
         Set-ItemProperty -Path "$cap\URLAssociations" -Name $proto -Value $id
     }
     Set-RegDefault "$cap\FileAssociations" ''
-    foreach ($ext in @('.htm', '.html', '.shtml', '.xht', '.xhtml')) {
+    foreach ($ext in $assoc.Extensions) {
         Set-ItemProperty -Path "$cap\FileAssociations" -Name $ext -Value $id
+        Set-OpenWithProgId $ext $id
     }
     Set-RegDefault "$cap\StartMenu" ''
     Set-ItemProperty -Path "$cap\StartMenu" -Name 'StartMenuInternet' -Value $id
@@ -389,6 +443,7 @@ function Register-Browser([string]$slug, [string]$name, [string]$brave, [string]
 
 function Unregister-Browser([string]$slug) {
     $id = "$IdPrefix$slug"
+    Remove-OpenWithProgIdEverywhere $id
     Remove-Item -Path "HKCU:\Software\Classes\$id" -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -Path "$ClientsKey\$id" -Recurse -Force -ErrorAction SilentlyContinue
     Remove-ItemProperty -Path 'HKCU:\Software\RegisteredApplications' -Name $id -ErrorAction SilentlyContinue
