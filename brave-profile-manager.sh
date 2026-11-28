@@ -25,7 +25,7 @@
 #     colored dot (your choice of color) in the top-right corner
 #   - writes a .desktop launcher named exactly what you typed
 #   - copies the variant's desktop actions (New Window, private window, etc.)
-#     into the launcher, each using the profile's own icon and data folder
+#     into the launcher, each using the profile's data folder
 #   - registers the variant's MIME types so the profile appears in
 #     default-app and "Open with" lists; it never sets you as the default
 #   - saves a per-profile uninstaller used by menu option 2 and the
@@ -625,7 +625,6 @@ write_profile_desktop() {
     for i in "${!action_ids[@]}"; do
         sections+=$'\n'"[Desktop Action ${action_ids[$i]}]"$'\n'
         sections+="Name=$(desk_escape "${action_names[$i]}")"$'\n'
-        sections+="Icon=$(desk_escape "$icon")"$'\n'
         sections+="Exec=$(desk_escape "$base_bin") --user-data-dir=\"$qdata\" --class=$class"
         [[ -n "${action_args[$i]}" ]] && sections+=" $(desk_escape "${action_args[$i]}")"
         sections+=$'\n'
@@ -653,7 +652,6 @@ X-BPM-Version=$FORMAT_VERSION
 $sections
 [Desktop Action UninstallProfile]
 Name=Uninstall $(desk_escape "$name")
-Icon=$(desk_escape "$icon")
 Exec=$(desk_escape "$uninstaller")
 EOF
     chmod +x "$path"
