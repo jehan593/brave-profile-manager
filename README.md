@@ -4,7 +4,7 @@
 
 Brave already has a profile switcher. This exists for the case it doesn't cover: making each profile a separate app and browser entry on Linux and Windows, with its own data folder, icon, taskbar group, launcher, and default-browser registration.
 
-So each profile shows up on its own in default-app settings, in link/file "open with" dialogs, and as a separately removable app in Settings/Control Panel. The script only registers the choices; you choose the default yourself.
+So each profile shows up on its own in default-app settings and in link/file "open with" dialogs, and has its own uninstall entry. The script only registers the choices; you choose the default yourself.
 
 Removing one profile never uninstalls Brave or the other profiles. Use `2` in the script, or that profile's own uninstall entry.
 
