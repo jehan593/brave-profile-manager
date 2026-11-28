@@ -17,7 +17,8 @@
 #     generated for that profile, so removing one never affects the others
 #
 # MENU:
-#   [1] Add / create new profile(s) : asks how many, then a name and data folder for each
+#   [1] Add / create new profile(s) : asks how many, then a name and color for
+#                                      each; the data folder comes from the name
 #   [2] Remove existing profile(s)  : lists them, you pick which to remove
 #
 # Everything is stored under your own user account, so no admin rights are needed.
@@ -59,6 +60,15 @@ function Ask([string]$prompt, [string]$default) {
 function Get-Slug([string]$s) {
     $x = $s.ToLower() -replace '[ _]+', '-' -replace '[^a-z0-9-]', '' -replace '-+', '-'
     return $x.Trim('-')
+}
+
+# Slugs are lowercase, so "Twin", "twin" and "TWIN" all count as the same name.
+function Test-SlugInUse([string]$slug, $items) {
+    if ($items | Where-Object { $_.Slug -eq $slug }) { return $true }
+    if (Get-Launchers | Where-Object { $_.Slug -eq $slug }) { return $true }
+    if (Test-Path -LiteralPath (Join-Path $DataRoot $slug)) { return $true }
+    if (Test-Path -LiteralPath (Join-Path $UninstallersDir $slug)) { return $true }
+    return $false
 }
 
 function Set-RegDefault([string]$path, [string]$value) {
@@ -673,19 +683,20 @@ function Install-Launchers {
         Write-Host "Profile $i of $count" -ForegroundColor Cyan
         $defName = if ($i -eq 1) { 'Brave profile' } else { "Brave profile $i" }
 
-        $name = Ask '  Name (exactly as you want it to appear)' $defName
+        while ($true) {
+            $name = Ask '  Name (exactly as you want it to appear)' $defName
 
-        $safe = ($name -replace '[\\/:*?"<>|]', '').Trim()
-        if (-not $safe) { $safe = $defName }
-        $slug = Get-Slug $name
-        if (-not $slug) { $slug = "profile-$i" }
+            $safe = ($name -replace '[\\/:*?"<>|]', '').Trim()
+            if (-not $safe) { $safe = $defName }
+            $slug = Get-Slug $name
+            if (-not $slug) { $slug = "profile-$i" }
 
-        $base = $slug; $dup = 2
-        while ($items | Where-Object { $_.Slug -eq $slug }) { $slug = "$base-$dup"; $dup++ }
+            if (-not (Test-SlugInUse $slug $items)) { break }
+            Write-Host "  '$slug' is already used by a profile or data folder. Choose a different name (capital letters don't make it different)." -ForegroundColor Yellow
+        }
 
-        $folder = Ask '  Data folder name' $slug
-        $folder = ($folder -replace '[\\/:*?"<>|]', '').Trim().TrimEnd('\')
-        if (-not $folder) { $folder = $slug }
+        # The data folder is derived from the name; it is not asked separately.
+        $folder = $slug
         $dataDir = Join-Path $DataRoot $folder
 
         while ($true) {

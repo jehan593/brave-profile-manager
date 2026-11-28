@@ -791,13 +791,20 @@ profile_from_desktop() {
     P_VERSION=$(desk_field "$f" X-BPM-Version)
 }
 
-slug_in_use() {
-    local slug="$1" f role
+# A name is a conflict if its generated slug is already used in this run, by an
+# installed profile, or by an existing data folder. Slugs are lowercase, so
+# "Twin", "twin" and "TWIN" all count as the same name.
+slug_conflict() {
+    local slug="$1" s f role
+    for s in "${P_SLUG[@]:-}"; do
+        [[ "$s" == "$slug" ]] && return 0
+    done
     while IFS= read -r f; do
         role=$(desk_field "$f" X-BPM-Role)
         [[ "$role" == "$UNINSTALL_ROLE" ]] && continue
-        [[ $(desk_field "$f" X-BPM-Slug) == "$slug" ]] && return 0
+        [[ "$(desk_field "$f" X-BPM-Slug)" == "$slug" ]] && return 0
     done < <(desktop_files)
+    [[ -n "${BASE_ROOT:-}" && -d "${BASE_ROOT}-${slug}" ]] && return 0
     return 1
 }
 
@@ -866,16 +873,13 @@ do_add() {
     for (( i=1; i<=NUM_PROFILES; i++ )); do
         echo
         info "Profile $i of $NUM_PROFILES"
-        NAME=$(ask_required "  Name (exactly as you want it to appear)")
-        SLUG=$(slugify "$NAME")
-        [[ -z "$SLUG" ]] && SLUG="profile-$i"
-
-        BASE_SLUG="$SLUG"; DUP=2
-        while slug_in_use "$SLUG"; do
-            SLUG="${BASE_SLUG}-${DUP}"
-            ((DUP++))
+        while true; do
+            NAME=$(ask_required "  Name (exactly as you want it to appear)")
+            SLUG=$(slugify "$NAME")
+            [[ -z "$SLUG" ]] && SLUG="profile-$i"
+            if ! slug_conflict "$SLUG"; then break; fi
+            warn "  '$SLUG' is already used by a profile or data folder. Choose a different name (capital letters don't make it different)."
         done
-        [[ "$SLUG" != "$BASE_SLUG" ]] && warn "  '$NAME' slug is already in use, using '$SLUG' instead."
 
         while true; do
             COLOR=$(ask "  Dot color for '$NAME'" "red")
