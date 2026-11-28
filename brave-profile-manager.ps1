@@ -13,6 +13,8 @@
 #     Settings > Apps > Default apps and can be set as the default browser
 #   - supports the same protocols and file types as Brave, and appears in
 #     "Open with" menus; links and files open in this profile
+#   - has its own uninstall entry in Settings, Control Panel and the Start
+#     menu, so removing one profile never uninstalls Brave or the others
 #
 # MENU:
 #   [1] Add / create new profile(s) : asks how many, then a name and data folder for each
@@ -21,6 +23,13 @@
 # Everything is stored under your own user account, so no admin rights are needed.
 #
 # Run:  powershell -ExecutionPolicy Bypass -File .\brave-profile-manager.ps1
+#
+# Silent/uninstall use: add -RemoveSlug <slug> [-KeepData]
+
+param(
+    [string]$RemoveSlug = '',
+    [switch]$KeepData
+)
 
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Drawing
@@ -405,6 +414,41 @@ function Get-Status {
 # Registering a launcher as a browser (Settings > Apps > Default apps)
 # ---------------------------------------------------------------------------
 
+# Per-user uninstall entry. This is what makes each profile show up in
+# Settings > Installed apps, Control Panel and the Start menu Uninstall action.
+function Register-UninstallEntry([string]$slug, [string]$name, [string]$icon, [string]$dataDir) {
+    $id  = "$IdPrefix$slug"
+    $key = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$id"
+    $exe = Join-Path $PSHOME 'powershell.exe'
+    if (-not (Test-Path $exe)) { $exe = Join-Path $PSHOME 'pwsh.exe' }
+
+    # Store the uninstaller with the support files so it survives if the git
+    # clone is moved or deleted later.
+    New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+    $copy   = Join-Path $InstallDir 'brave-profile-manager.ps1'
+    $source = if ($PSCommandPath) { $PSCommandPath } else { $MyInvocation.MyCommand.Path }
+    if ($source -and (Test-Path $source) -and
+        ([IO.Path]::GetFullPath($source) -ine [IO.Path]::GetFullPath($copy))) {
+        Copy-Item -LiteralPath $source -Destination $copy -Force
+    } elseif (-not (Test-Path $copy)) {
+        $copy = $source
+    }
+
+    $cmd   = '"{0}" -NoProfile -ExecutionPolicy Bypass -File "{1}" -RemoveSlug "{2}"' -f $exe, $copy, $slug
+    $quiet = $cmd + ' -KeepData'
+
+    if (-not (Test-Path $key)) { New-Item -Path $key -Force | Out-Null }
+    Set-ItemProperty -Path $key -Name 'DisplayName'       -Value $name
+    Set-ItemProperty -Path $key -Name 'DisplayVersion'    -Value '1.0'
+    Set-ItemProperty -Path $key -Name 'Publisher'         -Value 'Brave Profile Manager'
+    Set-ItemProperty -Path $key -Name 'DisplayIcon'       -Value "$icon,0"
+    Set-ItemProperty -Path $key -Name 'InstallLocation'   -Value $dataDir
+    Set-ItemProperty -Path $key -Name 'UninstallString'   -Value $cmd
+    Set-ItemProperty -Path $key -Name 'QuietUninstallString' -Value $quiet
+    Set-ItemProperty -Path $key -Name 'NoModify'          -Value 1
+    Set-ItemProperty -Path $key -Name 'NoRepair'          -Value 1
+}
+
 function Register-Browser([string]$slug, [string]$name, [string]$brave, [string]$dataDir, [string]$iconPath, [string]$aumid) {
     $id        = "$IdPrefix$slug"
     $icon      = $iconPath
@@ -458,6 +502,8 @@ function Register-Browser([string]$slug, [string]$name, [string]$brave, [string]
     $ra = 'HKCU:\Software\RegisteredApplications'
     if (-not (Test-Path $ra)) { New-Item -Path $ra -Force | Out-Null }
     Set-ItemProperty -Path $ra -Name $id -Value "Software\Clients\StartMenuInternet\$id\Capabilities"
+
+    Register-UninstallEntry $slug $name $iconPath $dataDir
 }
 
 function Unregister-Browser([string]$slug) {
@@ -466,6 +512,7 @@ function Unregister-Browser([string]$slug) {
     Remove-UserChoiceForProgId $id
     Remove-Item -Path "HKCU:\Software\Classes\$id" -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -Path "$ClientsKey\$id" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$id" -Recurse -Force -ErrorAction SilentlyContinue
     Remove-ItemProperty -Path 'HKCU:\Software\RegisteredApplications' -Name $id -ErrorAction SilentlyContinue
 }
 
@@ -598,7 +645,7 @@ else { Start-Process -FilePath $brave }
 # Remove
 # ---------------------------------------------------------------------------
 
-function Remove-OneLauncher($c) {
+function Remove-OneLauncher($c, [switch]$KeepData) {
     $desc = '{0} [{1}]' -f $Marker, $c.Slug
     foreach ($l in @(Get-LauncherShortcuts | Where-Object { $_.Description -eq $desc })) {
         Remove-Item -Path $l.Path -Force
@@ -612,17 +659,28 @@ function Remove-OneLauncher($c) {
 
     # Ask before deleting browsing data, like the Linux script does. The guard
     # keeps this to folders this script creates, never an arbitrary path.
+    # Quiet uninstalls keep the data instead of prompting.
     if ($c.DataDir -and (Test-Path $c.DataDir) -and
         ($c.DataDir -like ((Join-Path $DataRoot '*')))) {
-        Write-Host ''
-        Write-Host "Profile data for '$($c.Name)' still exists at: $($c.DataDir)" -ForegroundColor Yellow
-        $confirm = (Read-Host "  Delete this browsing data too? This is permanent. Type 'yes' to delete, anything else to keep").Trim().ToLower()
-        if ($confirm -eq 'yes') {
-            Remove-Item -Path $c.DataDir -Recurse -Force -ErrorAction SilentlyContinue
-            Write-Host "  deleted $($c.DataDir)" -ForegroundColor Green
+        if ($KeepData) {
+            Write-Host "  Kept $($c.DataDir) (quiet uninstall)"
         } else {
-            Write-Host "  Kept $($c.DataDir)"
+            Write-Host ''
+            Write-Host "Profile data for '$($c.Name)' still exists at: $($c.DataDir)" -ForegroundColor Yellow
+            $confirm = (Read-Host "  Delete this browsing data too? This is permanent. Type 'yes' to delete, anything else to keep").Trim().ToLower()
+            if ($confirm -eq 'yes') {
+                Remove-Item -Path $c.DataDir -Recurse -Force -ErrorAction SilentlyContinue
+                Write-Host "  deleted $($c.DataDir)" -ForegroundColor Green
+            } else {
+                Write-Host "  Kept $($c.DataDir)"
+            }
         }
+    }
+}
+
+function Remove-SharedFilesIfEmpty {
+    if (@(Get-Launchers).Count -eq 0 -and (Test-Path $InstallDir)) {
+        Remove-Item -Path $InstallDir -Recurse -Force
     }
 }
 
@@ -659,9 +717,7 @@ function Uninstall-Launchers {
     foreach ($c in $chosen) { Remove-OneLauncher $c }
 
     # When the last profile is gone, remove the shared files too.
-    if (@(Get-Launchers).Count -eq 0) {
-        if (Test-Path $InstallDir) { Remove-Item -Path $InstallDir -Recurse -Force }
-    }
+    Remove-SharedFilesIfEmpty
 
     Send-AssocChanged
     Write-Host ''
@@ -669,6 +725,22 @@ function Uninstall-Launchers {
     Write-Host 'If you pinned a profile to the taskbar, unpin it manually (right-click > Unpin).'
     Write-Host 'Pin the replacement shortcut again so Windows stores its new taskbar identity.'
     Write-Host 'Profile data folders are only deleted when you confirm with yes.'
+}
+
+# ---------------------------------------------------------------------------
+# Targeted uninstall, invoked by each profile's Uninstall registry entry
+# ---------------------------------------------------------------------------
+
+if ($RemoveSlug) {
+    $target = @(Get-Launchers) | Where-Object { $_.Slug -eq $RemoveSlug } | Select-Object -First 1
+    if (-not $target) {
+        Write-Host "No profile launcher with slug '$RemoveSlug' was found." -ForegroundColor Yellow
+        exit 1
+    }
+    Remove-OneLauncher $target -KeepData:$KeepData
+    Remove-SharedFilesIfEmpty
+    Send-AssocChanged
+    exit 0
 }
 
 # ---------------------------------------------------------------------------
