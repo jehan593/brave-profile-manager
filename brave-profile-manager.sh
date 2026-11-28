@@ -24,6 +24,8 @@
 #   - extracts the icon from the selected variant itself and draws a
 #     colored dot (your choice of color) in the top-right corner
 #   - writes a .desktop launcher named exactly what you typed
+#   - copies the variant's desktop actions (New Window, private window, etc.)
+#     into the launcher, each using the profile's own icon and data folder
 #   - registers the variant's MIME types so the profile appears in
 #     default-app and "Open with" lists; it never sets you as the default
 #   - saves a per-profile uninstaller used by menu option 2 and the
@@ -169,6 +171,31 @@ desk_field() {
     [[ -f "$file" ]] || return 0
     line=$(grep -m1 "^${key}=" "$file" 2>/dev/null | head -n1 | tr -d '\r')
     printf '%s' "${line#*=}"
+}
+
+# Fields inside a [Desktop Action ...] group, where keys repeat across groups.
+desktop_group_field() {
+    local file="$1" group="$2" key="$3"
+    [[ -f "$file" ]] || return 0
+    awk -v group="[$group]" -v key="$key" '
+        { line = $0; sub(/\r$/, "", line) }
+        line == group { in_group = 1; next }
+        /^\[/ { if (in_group) exit; next }
+        in_group && index(line, key "=") == 1 {
+            sub(/^[^=]*=/, "", line)
+            print line
+            exit
+        }
+    ' "$file"
+}
+
+desktop_action_ids() {
+    local f="$1" id
+    desk_field "$f" Actions | tr ';' '\n' | while IFS= read -r id; do
+        id=$(printf '%s' "$id" | sed -e 's/^[[:space:]]*//; s/[[:space:]]*$//; s/\r$//')
+        [[ -z "$id" || "$id" == 'UninstallProfile' ]] && continue
+        printf '%s\n' "$id"
+    done
 }
 
 brave_desktop_files() {
@@ -560,12 +587,49 @@ EOF
 
 write_profile_desktop() {
     local path="$1" name="$2" slug="$3" base_bin="$4" data_dir="$5" class="$6"
-    local icon="$7" tryexec="$8" uninstaller="$9" comment="${10}"
-    shift 10
+    local icon="$7" tryexec="$8" uninstaller="$9" comment="${10}" src_desktop="${11}"
+    shift 11
     local -a mimes=("$@")
-    local mime_line='' m
+    local -a action_ids=() action_names=() action_args=()
+    local mime_line='' m aid aname aexec aargs actions_line='' sections='' qdata
 
     for m in "${mimes[@]:-}"; do mime_line+="$m;"; done
+
+    # Copy the installed Brave variant's desktop actions so profile launchers
+    # expose the same right-click entries (New Window, private window, etc.).
+    if [[ -n "$src_desktop" && -f "$src_desktop" ]]; then
+        while IFS= read -r aid; do
+            [[ -z "$aid" || "$aid" == 'UninstallProfile' ]] && continue
+            aname=$(desktop_group_field "$src_desktop" "Desktop Action $aid" Name)
+            aexec=$(desktop_group_field "$src_desktop" "Desktop Action $aid" Exec)
+            [[ -z "$aname" || -z "$aexec" ]] && continue
+            if [[ "$aexec" == "$base_bin"* ]]; then
+                aargs=${aexec#"$base_bin"}
+            else
+                aargs=${aexec#* }
+                [[ "$aargs" == "$aexec" ]] && aargs=''
+            fi
+            aargs=${aargs# }
+            action_ids+=("$aid")
+            action_names+=("$aname")
+            action_args+=("$aargs")
+        done < <(desktop_action_ids "$src_desktop")
+    fi
+
+    for aid in "${action_ids[@]}" UninstallProfile; do
+        actions_line+="$aid;"
+    done
+
+    qdata=$(desk_escape "$data_dir" | sed -e 's/"/\\"/g')
+
+    for i in "${!action_ids[@]}"; do
+        sections+=$'\n'"[Desktop Action ${action_ids[$i]}]"$'\n'
+        sections+="Name=$(desk_escape "${action_names[$i]}")"$'\n'
+        sections+="Icon=$(desk_escape "$icon")"$'\n'
+        sections+="Exec=$(desk_escape "$base_bin") --user-data-dir=\"$qdata\" --class=$class"
+        [[ -n "${action_args[$i]}" ]] && sections+=" $(desk_escape "${action_args[$i]}")"
+        sections+=$'\n'
+    done
 
     cat > "$path" <<EOF
 [Desktop Entry]
@@ -573,20 +637,20 @@ Version=1.0
 Type=Application
 Name=$(desk_escape "$name")
 Comment=$(desk_escape "$comment")
-Exec=$(desk_escape "$base_bin") --user-data-dir="$(desk_escape "$data_dir" | sed -e 's/"/\\"/g')" --class=$class %U
+Exec=$(desk_escape "$base_bin") --user-data-dir="$qdata" --class=$class %U
 Icon=$(desk_escape "$icon")
 Categories=Network;WebBrowser;
 MimeType=$mime_line
 StartupWMClass=$class
 StartupNotify=true
 TryExec=$(desk_escape "$tryexec")
-Actions=UninstallProfile;
+Actions=$actions_line
 X-BPM-Marker=$(desk_escape "$MARKER")
 X-BPM-Role=$PROFILE_ROLE
 X-BPM-Slug=$slug
 X-BPM-DataDir=$(desk_escape "$data_dir")
 X-BPM-Version=$FORMAT_VERSION
-
+$sections
 [Desktop Action UninstallProfile]
 Name=Uninstall $(desk_escape "$name")
 Icon=$(desk_escape "$icon")
@@ -943,7 +1007,7 @@ do_add() {
 
         write_profile_desktop "$DESKTOP_PATH" "$NAME" "$SLUG" "$BASE_BIN" "$USER_DATA_DIR" "$CLASS" \
             "$ICON_PATH" "$TRYEXEC_BIN" "$UNINSTALLER_PATH" "Brave browser - $NAME profile" \
-            "${SEL_MIMES[@]:-}"
+            "$SEL_DESKTOP" "${SEL_MIMES[@]:-}"
         ok "  launcher -> $DESKTOP_PATH"
 
         if [[ ${#SEL_MIMES[@]} -gt 0 ]]; then
