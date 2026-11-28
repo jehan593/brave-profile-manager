@@ -22,6 +22,6 @@ bash <(curl -fsSL https://raw.githubusercontent.com/jehan593/brave-profile-manag
 powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/jehan593/brave-profile-manager/main/brave-profile-manager.ps1 | iex"
 ```
 
-`1` = add profiles, `2` = remove.
+`1` = add profiles, `2` = remove, `3` = update profiles (keeps browsing data and refreshes launchers/uninstallers).
 
 MIT — [LICENSE](LICENSE).

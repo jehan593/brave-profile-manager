@@ -20,6 +20,8 @@
 #   [1] Add / create new profile(s) : asks how many, then a name and color for
 #                                      each; the data folder comes from the name
 #   [2] Remove existing profile(s)  : lists them, you pick which to remove
+#   [3] Update existing profile(s)  : reapply the current creation settings to all;
+#                                      browsing data is never deleted
 #
 # Everything is stored under your own user account, so no admin rights are needed.
 #
@@ -355,7 +357,32 @@ function New-LauncherIcon([string]$brave, [System.Drawing.Color]$color, [string]
     $bw.Dispose(); $fs.Dispose()
 }
 
-function Initialize-ProfileIcon([string]$dataDir, [string]$iconPath) {
+function Get-IconDotColor([string]$iconPath) {
+    # Older launchers did not store their dot color. Read it back from the PNG
+    # payload inside our ICO so later updates can rebuild it from the current template.
+    try {
+        $bytes = [System.IO.File]::ReadAllBytes($iconPath)
+        if ($bytes.Length -lt 22) { return $null }
+        $size   = [BitConverter]::ToUInt32($bytes, 14)
+        $offset = [BitConverter]::ToUInt32($bytes, 18)
+        if ($offset + $size -gt $bytes.Length) { return $null }
+
+        $ms  = New-Object System.IO.MemoryStream($bytes, [int]$offset, [int]$size)
+        $bmp = [System.Drawing.Bitmap]::FromStream($ms)
+        $w = $bmp.Width
+        $d = [int]($w * 0.4)
+        $inset = [Math]::Max(1, [int]($w * 0.04))
+        $x = [int]($w - $d - $inset + ($d / 2.0))
+        $y = [int]($inset + ($d / 2.0))
+        $px = $bmp.GetPixel($x, $y)
+        $bmp.Dispose(); $ms.Dispose()
+        return ('#{0:X2}{1:X2}{2:X2}' -f $px.R, $px.G, $px.B)
+    } catch {
+        return $null
+    }
+}
+
+function Initialize-ProfileIcon([string]$dataDir, [string]$iconPath, [switch]$Safe) {
     # Brave uses <data dir>\Default\Google Profile.ico as this profile's
     # taskbar "relaunch icon". Keep our custom icon there and mark the profile
     # icon as current so Brave does not overwrite it on startup.
@@ -364,9 +391,25 @@ function Initialize-ProfileIcon([string]$dataDir, [string]$iconPath) {
     Copy-Item -LiteralPath $iconPath -Destination (Join-Path $profileDir 'Google Profile.ico') -Force
 
     $prefPath = Join-Path $profileDir 'Preferences'
-    $prefs = [ordered]@{}
-    if (Test-Path -LiteralPath $prefPath) {
-        try { $prefs = Get-Content -LiteralPath $prefPath -Raw | ConvertFrom-Json } catch { $prefs = [ordered]@{} }
+    $backup = $null
+    if (-not (Test-Path -LiteralPath $prefPath)) {
+        $prefs = [ordered]@{}
+    } else {
+        if ($Safe) {
+            $backup = Join-Path $profileDir 'Preferences.brave-profile-manager.bak'
+            if (-not (Test-Path -LiteralPath $backup)) {
+                Copy-Item -LiteralPath $prefPath -Destination $backup -Force
+            }
+        }
+        try {
+            $prefs = Get-Content -LiteralPath $prefPath -Raw | ConvertFrom-Json
+        } catch {
+            if ($Safe) {
+                Write-Host '  kept existing Preferences unchanged (could not read JSON)' -ForegroundColor Yellow
+                return $null
+            }
+            $prefs = [ordered]@{}
+        }
     }
     if (-not $prefs.PSObject.Properties['profile']) {
         $prefs | Add-Member -NotePropertyName 'profile' -NotePropertyValue ([ordered]@{}) -Force
@@ -376,6 +419,8 @@ function Initialize-ProfileIcon([string]$dataDir, [string]$iconPath) {
 
     $json = $prefs | ConvertTo-Json -Depth 100 -Compress
     [System.IO.File]::WriteAllText($prefPath, $json, (New-Object System.Text.UTF8Encoding($false)))
+    if ($Safe) { return $backup }
+    return $null
 }
 
 function Get-LauncherShortcuts {
@@ -399,10 +444,12 @@ function Get-Launchers {
     if (-not (Test-Path $ClientsKey)) { return }
     Get-ChildItem -Path $ClientsKey | Where-Object { $_.PSChildName -like "$IdPrefix*" } | ForEach-Object {
         [pscustomobject]@{
-            Slug    = $_.PSChildName.Substring($IdPrefix.Length)
-            Name    = $_.GetValue('')
-            DataDir = $_.GetValue('DataDir')
-            Aumid   = $_.GetValue('Aumid')
+            Slug      = $_.PSChildName.Substring($IdPrefix.Length)
+            Name      = $_.GetValue('')
+            DataDir   = $_.GetValue('DataDir')
+            Aumid     = $_.GetValue('Aumid')
+            Color     = $_.GetValue('Color')
+            BraveExe  = $_.GetValue('BraveExe')
         }
     }
 }
@@ -417,14 +464,11 @@ function Get-Status {
 # Registering a launcher as a browser (Settings > Apps > Default apps)
 # ---------------------------------------------------------------------------
 
-# Each profile gets its own self-contained uninstaller. It is generated at
-# creation time and never overwritten by later script versions, so a profile is
-# always removed by the same version that created it. Only the tiny cmd wrapper
-# below is shared, and it does nothing except pick PowerShell 5.1 or 7.
-function Register-UninstallEntry([string]$slug, [string]$name, [string]$icon, [string]$dataDir) {
-    $id = "$IdPrefix$slug"
-    $key = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$id"
-
+# Each profile gets its own self-contained uninstaller. It is regenerated when
+# that profile is created or updated, so removal logic stays current. Updating
+# one profile never touches another profile's uninstaller. Only the tiny cmd
+# wrapper below is shared, and it does nothing except pick PowerShell 5.1 or 7.
+function Set-UninstallWrapper {
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
     $wrapper = Join-Path $InstallDir 'uninstall.cmd'
     $batch = @'
@@ -438,6 +482,14 @@ where pwsh.exe >nul 2>nul && for /f "delims=" %%P in ('where pwsh.exe') do set "
 exit /b %ERRORLEVEL%
 '@
     Set-Content -Path $wrapper -Value $batch -Encoding ASCII
+    return $wrapper
+}
+
+function Register-UninstallEntry([string]$slug, [string]$name, [string]$icon, [string]$dataDir) {
+    $id = "$IdPrefix$slug"
+    $key = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$id"
+
+    $wrapper = Set-UninstallWrapper
 
     $uninstallerDir = Join-Path $UninstallersDir $slug
     if (Test-Path -LiteralPath $uninstallerDir) {
@@ -447,13 +499,13 @@ exit /b %ERRORLEVEL%
     $uninstaller = Join-Path $uninstallerDir 'uninstall.ps1'
 
     $script = @'
-param([switch]$KeepData, [switch]$NoPause)
+param([switch]$KeepData, [switch]$NoPause, [switch]$NoConfirm)
 
 # Generated by Brave Profile Manager on __GENERATED__.
 # Profile: __NAME__
 # Slug:    __SLUG__
 # Data:    __DATA_DIR__
-# This file is self-contained: later versions of the manager never rewrite it.
+# This file is self-contained; update regenerates it from the current template.
 
 $ErrorActionPreference = 'Stop'
 $id             = '__ID__'
@@ -462,6 +514,24 @@ $name           = '__NAME__'
 $dataDir        = '__DATA_DIR__'
 $marker         = '__MARKER__'
 $uninstallerDir = '__UNINSTALLER_DIR__'
+
+# Settings launches this with no switches, so confirm before changing anything.
+# -KeepData is the quiet command-line uninstall; -NoConfirm is used by the
+# manager's own menu, which already asks which profile to remove.
+if (-not $NoConfirm -and -not $KeepData) {
+    Write-Host ''
+    Write-Host "Uninstall '$name' [$slug]" -ForegroundColor Cyan
+    Write-Host 'This removes this profile launcher, its browser entry, icon, and shortcuts.'
+    $confirm = (Read-Host "  Continue? (y/n)").Trim().ToLower()
+    if ($confirm -ne 'y' -and $confirm -ne 'yes') {
+        Write-Host 'Cancelled. Nothing was removed.' -ForegroundColor Yellow
+        if (-not $NoPause) {
+            Write-Host 'Press Enter to continue'
+            try { Read-Host | Out-Null } catch { }
+        }
+        return
+    }
+}
 
 function Send-AssocChanged {
     try {
@@ -591,7 +661,7 @@ if (-not $NoPause) {
     Set-ItemProperty -Path $key -Name 'NoRepair'              -Value 1
 }
 
-function Register-Browser([string]$slug, [string]$name, [string]$brave, [string]$dataDir, [string]$iconPath, [string]$aumid) {
+function Register-Browser([string]$slug, [string]$name, [string]$brave, [string]$dataDir, [string]$iconPath, [string]$aumid, [string]$colorName) {
     $id        = "$IdPrefix$slug"
     $icon      = $iconPath
     $desc      = 'Brave browser profile with its own data folder, icon and taskbar group.'
@@ -623,6 +693,8 @@ function Register-Browser([string]$slug, [string]$name, [string]$brave, [string]
     Set-RegDefault $cli $name
     Set-ItemProperty -Path $cli -Name 'DataDir' -Value $dataDir
     Set-ItemProperty -Path $cli -Name 'Aumid' -Value $aumid
+    Set-ItemProperty -Path $cli -Name 'Color' -Value $colorName
+    Set-ItemProperty -Path $cli -Name 'BraveExe' -Value $brave
     Set-RegDefault "$cli\DefaultIcon" $icon
     Set-RegDefault "$cli\shell\open\command" $launchCmd
 
@@ -741,7 +813,7 @@ function Install-Launchers {
             Set-LauncherAumid $t $aumid
         }
 
-        Register-Browser $it.Slug $it.Name $brave $it.DataDir $iconPath $aumid
+        Register-Browser $it.Slug $it.Name $brave $it.DataDir $iconPath $aumid $it.Color.Name
         Write-Host ("Created profile: {0}  (data folder: {1})" -f $it.Name, $it.DataDir) -ForegroundColor Green
     }
 
@@ -758,6 +830,111 @@ function Install-Launchers {
 }
 
 # ---------------------------------------------------------------------------
+# Update
+# ---------------------------------------------------------------------------
+
+function Update-Profiles {
+    $list = @(Get-Launchers)
+    if ($list.Count -eq 0) {
+        Write-Host 'No Brave profile launchers found. Nothing to update.'
+        return
+    }
+
+    $brave = $BravePaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $brave) {
+        Write-Host 'Could not find brave.exe in the usual locations. Nothing was changed.' -ForegroundColor Yellow
+        return
+    }
+
+    Write-Host ''
+    Write-Host ('Found {0} Brave profile launcher(s):' -f $list.Count)
+    foreach ($c in $list) { Write-Host ('  - {0} [{1}]' -f $c.Name, $c.Slug) }
+    Write-Host 'This reapplies the current launcher/registration settings. Browsing data is never deleted.'
+    $confirm = (Read-Host 'Update all of them? (y/n)').Trim().ToLower()
+    if ($confirm -ne 'y' -and $confirm -ne 'yes') { Write-Host 'Nothing updated.'; return }
+
+    New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+    New-Item -ItemType Directory -Path $IconsDir -Force | Out-Null
+
+    $dataPattern = Join-Path $DataRoot '*'
+    foreach ($c in $list) {
+        Write-Host ''
+        Write-Host ("Updating {0} [{1}]" -f $c.Name, $c.Slug) -ForegroundColor Cyan
+
+        # Only ever touch data folders this script owns under BraveProfiles.
+        if (-not $c.DataDir -or -not (Test-Path -LiteralPath $c.DataDir) -or
+            ($c.DataDir -notlike $dataPattern)) {
+            Write-Host ("  skipped: unexpected data folder '{0}'" -f $c.DataDir) -ForegroundColor Yellow
+            continue
+        }
+
+        try {
+            $iconPath = Join-Path $IconsDir ($c.Slug + '.ico')
+            $colorName = $c.Color
+            $color = $null
+            if ($colorName) { $color = Get-DotColor $colorName }
+            if ($null -eq $color -and (Test-Path -LiteralPath $iconPath)) {
+                $colorName = Get-IconDotColor $iconPath
+                if ($colorName) { $color = Get-DotColor $colorName }
+            }
+            if ($null -ne $color) {
+                # Rebuild from the current icon template, keeping this profile's dot color.
+                New-LauncherIcon $brave $color $iconPath
+            } elseif (-not (Test-Path -LiteralPath $iconPath)) {
+                Write-Host '  icon missing; generating a default red dot' -ForegroundColor Yellow
+                New-LauncherIcon $brave (Get-DotColor 'red') $iconPath
+                $colorName = 'red'
+            } else {
+                Write-Host '  kept existing icon (dot color could not be read)' -ForegroundColor Yellow
+            }
+
+            $prefBackup = Initialize-ProfileIcon $c.DataDir $iconPath -Safe
+
+            try {
+                $aumid = Get-BrowserAumid $brave $c.DataDir
+            } catch {
+                $aumid = $c.Aumid
+                Write-Host ('  kept previous taskbar ID: {0}' -f $_.Exception.Message) -ForegroundColor Yellow
+            }
+            if (-not $aumid) { $aumid = '' }
+
+            $safe = ($c.Name -replace '[\\/:*?"<>|]', '').Trim()
+            if (-not $safe) { $safe = $c.Slug }
+            $targets = @(
+                (Join-Path ([Environment]::GetFolderPath('Programs')) ($safe + '.lnk')),
+                (Join-Path ([Environment]::GetFolderPath('Desktop')) ($safe + '.lnk'))
+            )
+            $ws = New-Object -ComObject WScript.Shell
+            foreach ($t in $targets) {
+                $lnk = $ws.CreateShortcut($t)
+                $lnk.TargetPath       = $brave
+                $lnk.Arguments        = ('--user-data-dir="{0}"' -f $c.DataDir)
+                $lnk.WorkingDirectory = Split-Path $brave
+                $lnk.IconLocation     = $iconPath
+                $lnk.Description      = ('{0} [{1}]' -f $Marker, $c.Slug)
+                $lnk.Save()
+                if ($aumid) { Set-LauncherAumid $t $aumid }
+            }
+
+            Register-Browser $c.Slug $c.Name $brave $c.DataDir $iconPath $aumid $colorName
+            if ($prefBackup -and (Test-Path -LiteralPath $prefBackup)) {
+                Remove-Item -LiteralPath $prefBackup -Force
+                Write-Host '  temporary Preferences backup cleared'
+            }
+            Write-Host ("  refreshed uninstaller for {0}" -f $c.Slug)
+            Write-Host ("  updated: {0}" -f $c.Name) -ForegroundColor Green
+            Write-Host ("  data kept: {0}" -f $c.DataDir)
+        } catch {
+            Write-Host ("  failed: {0}" -f $_.Exception.Message) -ForegroundColor Red
+        }
+    }
+
+    Send-AssocChanged
+    Write-Host ''
+    Write-Host 'Done. No browsing data was deleted.' -ForegroundColor Green
+}
+
+# ---------------------------------------------------------------------------
 # Remove
 # ---------------------------------------------------------------------------
 
@@ -767,7 +944,7 @@ function Remove-OneLauncher($c) {
     $uninstaller = Join-Path $UninstallersDir ($c.Slug + '\uninstall.ps1')
     if (Test-Path -LiteralPath $uninstaller) {
         Write-Host ("Removing '{0}' with its saved uninstaller..." -f $c.Name) -ForegroundColor Cyan
-        & $uninstaller -NoPause
+        & $uninstaller -NoPause -NoConfirm
         return
     }
 
@@ -876,16 +1053,18 @@ while ($true) {
     Write-Host ''
     Write-Host '  [1] Add / create new profile(s)'
     Write-Host '  [2] Remove existing profile(s)  (undo; cleans up when the last one is gone)'
+    Write-Host '  [3] Update existing profile(s)  (reapply current settings; data is kept)'
     Write-Host '  [Q] Quit'
     Write-Host ''
-    $choice = (Read-Host 'Choose 1, 2 or Q').Trim().ToUpper()
+    $choice = (Read-Host 'Choose 1, 2, 3 or Q').Trim().ToUpper()
 
     try {
         switch ($choice) {
             '1' { Install-Launchers;   Read-Host 'Press Enter to continue' | Out-Null }
             '2' { Uninstall-Launchers; Read-Host 'Press Enter to continue' | Out-Null }
+            '3' { Update-Profiles;     Read-Host 'Press Enter to continue' | Out-Null }
             'Q' { return }
-            default { Write-Host 'Please type 1, 2 or Q.' -ForegroundColor Yellow }
+            default { Write-Host 'Please type 1, 2, 3 or Q.' -ForegroundColor Yellow }
         }
     } catch {
         Write-Host ('Something went wrong: ' + $_.Exception.Message) -ForegroundColor Red
